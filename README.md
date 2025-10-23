@@ -17,7 +17,6 @@
 - 📦 **批量处理支持**：一次处理多张图片
 - 💾 **智能内存管理**：可选模型保持加载，优化显存
 - 🔧 **辅助工具链**：提供文本分割、列表处理等节点
-- ⚡ **Flash Attention 2 支持**：在兼容硬件上加速推理
 
 ### 📋 硬件要求
 
@@ -79,11 +78,10 @@ A custom node for ComfyUI that integrates the **Qwen3-VL-4B-Instruct-FP8** visio
 
 ### ✨ Key Features
 
-- 🚀 **Efficient FP8 Quantization**: Runs with only ~2.5GB VRAM
+- 🚀 **Efficient FP8 Quantization**: Runs with only ~10GB VRAM
 - 📦 **Batch Processing Support**: Process multiple images at once
 - 💾 **Smart Memory Management**: Optional model persistence for optimized VRAM usage
 - 🔧 **Auxiliary Toolchain**: Includes nodes for text splitting and list processing
-- ⚡ **Flash Attention 2 Support**: Faster inference on supported hardware
 
 ### 📋 Hardware Requirements
 
