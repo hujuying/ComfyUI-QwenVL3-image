@@ -1,5 +1,5 @@
 # ComfyUI-QwenVL3-image
-# This custom node is a simplified version of ComfyUI-QwenVL, specifically for the Qwen3-VL-4B-Instruct-FP8 model.
+# 修改后支持两个提示词输入框并自动组合
 
 import torch
 import time
@@ -71,19 +71,13 @@ class ImageProcessor:
         return Image.fromarray(image_np)
 
     def resize_if_needed(self, pil_image: Image.Image, max_size: int = 768) -> Image.Image:
-        """
-        如果图片最长边大于max_size，则等比缩放到max_size，否则保持不变
-        """
         width, height = pil_image.size
         max_dimension = max(width, height)
         
         if max_dimension > max_size:
-            # 计算缩放比例
             scale = max_size / max_dimension
             new_width = int(width * scale)
             new_height = int(height * scale)
-            
-            # 使用高质量的LANCZOS算法进行缩放
             resized_image = pil_image.resize((new_width, new_height), Image.LANCZOS)
             print(f"  Image resized from {width}x{height} to {new_width}x{new_height} (max edge: {max_dimension} -> {max_size})")
             return resized_image
@@ -102,15 +96,11 @@ class ImageProcessor:
 class ModelHandler:
     def __init__(self, configs):
         self.configs = configs
-        # 统一的模型路径（手动下载和自动下载都使用此路径）
-        # 支持在 config.json 中自定义路径
         custom_path = configs.get("custom_model_path", "")
         if custom_path and custom_path.strip():
-            # 使用自定义路径
             self.models_dir = Path(custom_path.strip())
             print(f"Using custom model path: {self.models_dir}")
         else:
-            # 使用默认路径（ComfyUI的models/Qwen目录）
             self.models_dir = Path(folder_paths.models_dir) / "Qwen"
         self.models_dir.mkdir(parents=True, exist_ok=True)
 
@@ -121,11 +111,8 @@ class ModelHandler:
 
         repo_id = model_info['repo_id']
         model_folder_name = repo_id.split('/')[-1]
-
-        # 统一的模型路径
         model_path = self.models_dir / model_folder_name
         
-        # 如果模型不存在或目录为空，则自动下载
         if not model_path.exists() or not any(model_path.iterdir()):
             print(f"Model not found locally. Downloading '{model_name}' to {model_path}...")
             snapshot_download(
@@ -162,14 +149,12 @@ class QwenVL3_image:
                 print(f"[{id(self)}] VRAM reserved before unload: {vram_reserved_before:.2f} MB")
             
             try:
-                # Move model to CPU first
                 print(f"[{id(self)}] Moving model to CPU...")
                 self.model.to('cpu')
                 print(f"[{id(self)}] Model moved to CPU successfully.")
             except Exception as e:
                 print(f"[{id(self)}] Warning: Could not move model to CPU: {e}")
 
-            # Delete references
             print(f"[{id(self)}] Deleting model references...")
             del self.model
             del self.processor
@@ -180,13 +165,11 @@ class QwenVL3_image:
             self.current_device = None
             print(f"[{id(self)}] All references deleted.")
             
-            # Force garbage collection multiple times
             print(f"[{id(self)}] Running garbage collection...")
             for i in range(3):
                 collected = gc.collect()
                 print(f"[{id(self)}]   GC pass {i+1}: collected {collected} objects")
             
-            # Clear CUDA cache
             if torch.cuda.is_available():
                 print(f"[{id(self)}] Clearing CUDA cache...")
                 torch.cuda.empty_cache()
@@ -249,7 +232,8 @@ class QwenVL3_image:
             "required": {
                 "image": ("IMAGE",),
                 "preset_prompt": (preset_prompts, {"default": preset_prompts[0]}),
-                "custom_prompt": ("STRING", {"default": "", "multiline": True, "placeholder": "If provided, this will override the preset prompt."}),
+                "custom_prompt": ("STRING", {"default": "", "multiline": True, "placeholder": "If provided, this will be combined with additional prompt"}),
+                "additional_prompt": ("STRING", {"default": "", "multiline": True, "placeholder": "Additional prompt to combine with custom prompt"}),
                 "max_tokens": ("INT", {"default": 1024, "min": 64, "max": 2048, "step": 16}),
                 "temperature": ("FLOAT", {"default": 0.6, "min": 0.1, "max": 1.0, "step": 0.1}),
                 "device": (["auto", "cuda", "cpu", "mps"], {"default": "auto"}),
@@ -264,21 +248,25 @@ class QwenVL3_image:
     CATEGORY = "Qwenvl"
 
     @torch.no_grad()
-    def process(self, image, preset_prompt, max_tokens, temperature, device, seed, custom_prompt="", keep_model_loaded=True):
+    def process(self, image, preset_prompt, max_tokens, temperature, device, seed, 
+                custom_prompt="", additional_prompt="", keep_model_loaded=True):
         start_time = time.time()
         
-        # Hidden parameters with default values
-        top_p = 0.9
-        num_beams = 1
-        repetition_penalty = 1.2
+        # 处理提示词组合逻辑
+        prompt_parts = []
+        # 收集非空提示词部分
+        if custom_prompt.strip():
+            prompt_parts.append(custom_prompt.strip())
+        if additional_prompt.strip():
+            prompt_parts.append(additional_prompt.strip())
+        # 如果有自定义提示词组合，则使用组合结果，否则使用预设提示词
+        final_prompt = ", ".join(prompt_parts) if prompt_parts else preset_prompt
         
         try:
             torch.manual_seed(seed)
             self.load_model(device)
             print(f"Processing in instance {id(self)}. Model is on device: {self.model.device}")
             effective_device = self.current_device
-            
-            final_prompt = custom_prompt.strip() if custom_prompt and custom_prompt.strip() else preset_prompt
             
             pil_images = self.image_processor.batch_to_pil_list(image)
             print(f"Processing a batch of {len(pil_images)} image(s) individually.")
@@ -287,7 +275,6 @@ class QwenVL3_image:
             for i, pil_image in enumerate(pil_images):
                 print(f"Processing image {i+1}/{len(pil_images)}...")
                 
-                # 自动缩放图片：如果最长边大于768，则等比缩放到768
                 pil_image = self.image_processor.resize_if_needed(pil_image, max_size=768)
                 
                 conversation = [{"role": "user", "content": [
@@ -303,13 +290,13 @@ class QwenVL3_image:
                 stop_tokens = [self.tokenizer.eos_token_id]
                 if hasattr(self.tokenizer, 'eot_id'): stop_tokens.append(self.tokenizer.eot_id)
 
-                gen_kwargs = {"max_new_tokens": max_tokens, "repetition_penalty": repetition_penalty, "num_beams": num_beams, "eos_token_id": stop_tokens, "pad_token_id": self.tokenizer.pad_token_id}
-                if num_beams > 1:
+                gen_kwargs = {"max_new_tokens": max_tokens, "repetition_penalty": 1.2, "num_beams": 1, "eos_token_id": stop_tokens, "pad_token_id": self.tokenizer.pad_token_id}
+                if 1 > 1:
                     gen_kwargs["do_sample"] = False
                 else:
-                    gen_kwargs.update({"do_sample": True, "temperature": temperature, "top_p": top_p})
+                    gen_kwargs.update({"do_sample": True, "temperature": temperature, "top_p": 0.9})
 
-                outputs = self.model.generate(**model_inputs, **gen_kwargs)
+                outputs = self.model.generate(** model_inputs, **gen_kwargs)
                 input_ids_len = model_inputs["input_ids"].shape[1]
                 text = self.tokenizer.decode(outputs[0, input_ids_len:], skip_special_tokens=True)
                 all_descriptions.append(text.strip())
